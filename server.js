@@ -84,6 +84,7 @@ app.post('/create-project', async (req, res) => {
 });
 
 // Helper Function for NVIDIA SD3
+// Isko replace karo purane generateImage se
 async function generateImage(prompt, ratio) {
     if (!prompt) return null;
     const aspect_ratio = ratio === "9:16" ? "9:16" : "16:9";
@@ -91,19 +92,33 @@ async function generateImage(prompt, ratio) {
     try {
         const response = await axios.post(
             'https://integrate.api.nvidia.com/v1/models/stabilityai/stable-diffusion-3-medium',
-            { payload: { prompt, mode: "text-to-image", aspect_ratio } },
             { 
-                headers: { 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}` },
-                timeout: 60000 // 60 seconds wait for NVIDIA
+                prompt: prompt, // Payload hatakar direct prompt bhejo (NVIDIA Standard)
+                mode: "text-to-image", 
+                aspect_ratio: aspect_ratio 
+            },
+            { 
+                headers: { 
+                    'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
+                    'Accept': 'application/json' 
+                },
+                timeout: 60000 
             }
         );
-        return response.data; 
+
+        // NVIDIA aksar image ko 'artifacts' ya 'image' field mein bhejta hai
+        // Hum check kar rahe hain ki base64 data kahan hai
+        const imageData = response.data.artifacts?.[0]?.base64 || response.data.image;
+        
+        if (imageData) {
+            return `data:image/png;base64,${imageData}`; // Frontend ke liye ready format
+        }
+        return null;
     } catch (e) {
-        console.log("SD3 API failed for a frame, skipping...");
+        console.log("SD3 API failed: ", e.response?.data || e.message);
         return null; 
     }
 }
-
 app.get('/project/:id', (req, res) => res.json(projects[req.params.id] || { error: "Not found" }));
 
 const PORT = process.env.PORT || 10000;
