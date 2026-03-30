@@ -15,50 +15,61 @@ const nvidiaClient = new OpenAI({
 
 let projects = {};
 
-// 1. Render Wake-up Endpoint
-app.get('/health', (req, res) => {
-    res.json({ status: "live", message: "Server is awake and ready! 🚀" });
-});
+// 1. Health Check (Server Jagane ke liye)
+app.get('/health', (req, res) => res.json({ status: "live" }));
 
-// 2. Main Logic: Generate Workflow & Images
+// 2. Main Generation Route
 app.post('/create-project', async (req, res) => {
-    const { objectName, ratio, clipCount = 4 } = req.body;
+    const { objectName, ratio } = req.body;
     const projectId = "proj_" + Date.now();
 
-    projects[projectId] = { name: objectName, status: "Thinking...", clips: [], finalShowcase: null };
+    // Initial State
+    projects[projectId] = { 
+        name: objectName, 
+        status: "Thinking...", 
+        clips: [], 
+        finalShowcase: null,
+        error: null 
+    };
+
+    // Turant Response bhej do (Taaki Render timeout na kare)
     res.json({ success: true, projectId });
 
+    // --- Background Processing Shuru ---
     try {
-        // STEP 1: DeepSeek/Gemini se Prompts banwana
-        const systemPrompt = `You are a cinematic director. Create a ${clipCount}-clip restoration workflow for [${objectName}]. 
-        STRICT RULES:
-        - Clip-1: Start Image, Video Prompt, End Image.
-        - Clip-2 to ${clipCount}: Refers to previous End Image, Video Prompt, New End Image.
-        - Include a 'FINAL SHOWCASE MOTION' at the end.
-        - Format everything in a clean JSON-like structure.`;
+        console.log(`Starting project for: ${objectName}`);
+
+        // STEP 1: DeepSeek se Prompts mangwana
+        const systemPrompt = `You are a cinematic director. Create a 4-clip restoration workflow for [${objectName}]. 
+        Return ONLY a JSON object with this structure: 
+        { "clips": [ { "title": "...", "startPrompt": "...", "videoPrompt": "...", "endPrompt": "..." } ], "finalShowcase": "..." }
+        Clip-1 must have startPrompt. Clips 2-4 use previous endPrompt.`;
 
         const completion = await nvidiaClient.chat.completions.create({
-            model: "deepseek-ai/deepseek-v3", // or google/gemini-2.0-flash
+            model: "deepseek-ai/deepseek-v3",
             messages: [{ role: "user", content: systemPrompt }],
-            response_format: { type: "json_object" } // Optional if model supports
+            response_format: { type: "json_object" }
         });
 
         const aiOutput = JSON.parse(completion.choices[0].message.content);
         projects[projectId].status = "Generating Images...";
 
-        // STEP 2: Loop through clips and generate images using SD3
+        // STEP 2: Image Generation Loop
         for (let i = 0; i < aiOutput.clips.length; i++) {
             const clip = aiOutput.clips[i];
+            console.log(`Generating images for Clip ${i+1}...`);
+
+            // Start Image (Sirf Clip 1 ke liye)
+            let startImg = (i === 0) ? await generateImage(clip.startPrompt, ratio) : projects[projectId].clips[i-1].endImage;
             
-            // Sirf End Image generate karni hai (continuity ke liye), Clip 1 mein Start bhi.
-            let startImgData = (i === 0) ? await generateImage(clip.startPrompt, ratio) : projects[projectId].clips[i-1].endImage;
-            let endImgData = await generateImage(clip.endPrompt, ratio);
+            // End Image
+            let endImg = await generateImage(clip.endPrompt, ratio);
 
             projects[projectId].clips.push({
                 title: clip.title,
-                startImage: startImgData,
+                startImage: startImg || "Image Failed", 
                 videoPrompt: clip.videoPrompt,
-                endImage: endImgData
+                endImage: endImg || "Image Failed"
             });
         }
 
@@ -66,25 +77,34 @@ app.post('/create-project', async (req, res) => {
         projects[projectId].status = "Completed";
 
     } catch (err) {
-        console.error(err);
+        console.error("Pipeline Error:", err.message);
         projects[projectId].status = "Failed";
+        projects[projectId].error = err.message;
     }
 });
 
-// Helper: NVIDIA SD3 Image Generation
+// Helper Function for NVIDIA SD3
 async function generateImage(prompt, ratio) {
+    if (!prompt) return null;
     const aspect_ratio = ratio === "9:16" ? "9:16" : "16:9";
+    
     try {
         const response = await axios.post(
             'https://integrate.api.nvidia.com/v1/models/stabilityai/stable-diffusion-3-medium',
             { payload: { prompt, mode: "text-to-image", aspect_ratio } },
-            { headers: { 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}` } }
+            { 
+                headers: { 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}` },
+                timeout: 60000 // 60 seconds wait for NVIDIA
+            }
         );
         return response.data; 
-    } catch (e) { return null; }
+    } catch (e) {
+        console.log("SD3 API failed for a frame, skipping...");
+        return null; 
+    }
 }
 
 app.get('/project/:id', (req, res) => res.json(projects[req.params.id] || { error: "Not found" }));
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server live on ${PORT}`));
+app.listen(PORT, () => console.log(`Backend Active on ${PORT}`));
