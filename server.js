@@ -15,15 +15,12 @@ const nvidiaClient = new OpenAI({
 
 let projects = {};
 
-// 1. Health Check (Server Jagane ke liye)
 app.get('/health', (req, res) => res.json({ status: "live" }));
 
-// 2. Main Generation Route
 app.post('/create-project', async (req, res) => {
     const { objectName, ratio } = req.body;
     const projectId = "proj_" + Date.now();
 
-    // Initial State
     projects[projectId] = { 
         name: objectName, 
         status: "Thinking...", 
@@ -32,18 +29,11 @@ app.post('/create-project', async (req, res) => {
         error: null 
     };
 
-    // Turant Response bhej do (Taaki Render timeout na kare)
     res.json({ success: true, projectId });
 
-    // --- Background Processing Shuru ---
     try {
-        console.log(`Starting project for: ${objectName}`);
-
-        // STEP 1: DeepSeek se Prompts mangwana
         const systemPrompt = `You are a cinematic director. Create a 4-clip restoration workflow for [${objectName}]. 
-        Return ONLY a JSON object with this structure: 
-        { "clips": [ { "title": "...", "startPrompt": "...", "videoPrompt": "...", "endPrompt": "..." } ], "finalShowcase": "..." }
-        Clip-1 must have startPrompt. Clips 2-4 use previous endPrompt.`;
+        Return ONLY a JSON object: { "clips": [ { "title": "...", "startPrompt": "...", "videoPrompt": "...", "endPrompt": "..." } ], "finalShowcase": "..." }`;
 
         const completion = await nvidiaClient.chat.completions.create({
             model: "deepseek-ai/deepseek-v3",
@@ -54,22 +44,18 @@ app.post('/create-project', async (req, res) => {
         const aiOutput = JSON.parse(completion.choices[0].message.content);
         projects[projectId].status = "Generating Images...";
 
-        // STEP 2: Image Generation Loop
         for (let i = 0; i < aiOutput.clips.length; i++) {
             const clip = aiOutput.clips[i];
-            console.log(`Generating images for Clip ${i+1}...`);
-
-            // Start Image (Sirf Clip 1 ke liye)
-            let startImg = (i === 0) ? await generateImage(clip.startPrompt, ratio) : projects[projectId].clips[i-1].endImage;
             
-            // End Image
+            // Image Generation with Exact NVIDIA Format
+            let startImg = (i === 0) ? await generateImage(clip.startPrompt, ratio) : projects[projectId].clips[i-1].endImage;
             let endImg = await generateImage(clip.endPrompt, ratio);
 
             projects[projectId].clips.push({
                 title: clip.title,
-                startImage: startImg || "Image Failed", 
+                startImage: startImg, 
                 videoPrompt: clip.videoPrompt,
-                endImage: endImg || "Image Failed"
+                endImage: endImg
             });
         }
 
@@ -77,14 +63,11 @@ app.post('/create-project', async (req, res) => {
         projects[projectId].status = "Completed";
 
     } catch (err) {
-        console.error("Pipeline Error:", err.message);
         projects[projectId].status = "Failed";
         projects[projectId].error = err.message;
     }
 });
 
-// Helper Function for NVIDIA SD3
-// Isko replace karo purane generateImage se
 async function generateImage(prompt, ratio) {
     if (!prompt) return null;
     const aspect_ratio = ratio === "9:16" ? "9:16" : "16:9";
@@ -92,34 +75,31 @@ async function generateImage(prompt, ratio) {
     try {
         const response = await axios.post(
             'https://integrate.api.nvidia.com/v1/models/stabilityai/stable-diffusion-3-medium',
-            { 
-                prompt: prompt, // Payload hatakar direct prompt bhejo (NVIDIA Standard)
-                mode: "text-to-image", 
-                aspect_ratio: aspect_ratio 
+            {
+                prompt: prompt,
+                aspect_ratio: aspect_ratio,
+                mode: "text-to-image"
             },
             { 
                 headers: { 
                     'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
                     'Accept': 'application/json' 
-                },
-                timeout: 60000 
+                }
             }
         );
 
-        // NVIDIA aksar image ko 'artifacts' ya 'image' field mein bhejta hai
-        // Hum check kar rahe hain ki base64 data kahan hai
-        const imageData = response.data.artifacts?.[0]?.base64 || response.data.image;
-        
-        if (imageData) {
-            return `data:image/png;base64,${imageData}`; // Frontend ke liye ready format
+        // NVIDIA SD3 returns base64 in 'image' field
+        if (response.data && response.data.image) {
+            return `data:image/png;base64,${response.data.image}`;
         }
         return null;
     } catch (e) {
-        console.log("SD3 API failed: ", e.response?.data || e.message);
+        console.error("NVIDIA Error:", e.response?.data || e.message);
         return null; 
     }
 }
+
 app.get('/project/:id', (req, res) => res.json(projects[req.params.id] || { error: "Not found" }));
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Backend Active on ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Backend Active`));
