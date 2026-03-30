@@ -2,90 +2,89 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const { OpenAI } = require('openai'); // NVIDIA NIM uses OpenAI compatible client
+const { OpenAI } = require('openai');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// NVIDIA LLM Client (DeepSeek / Gemini)
-const nvidiaLLM = new OpenAI({
-  apiKey: process.env.NVIDIA_API_KEY,
-  baseURL: 'https://integrate.api.nvidia.com/v1',
+const nvidiaClient = new OpenAI({
+    apiKey: process.env.NVIDIA_API_KEY,
+    baseURL: 'https://integrate.api.nvidia.com/v1',
 });
 
 let projects = {};
 
-// --- Helper: LLM se Workflow Text mangwana ---
-async function generateWorkflowText(objectName) {
-    const systemPrompt = `You are a cinematic director. Create a 4-clip restoration workflow for a [${objectName}]. 
-    Format exactly like this:
-    Clip-1 Title | Image Prompt | Video Prompt
-    Clip-2 Title | Image Prompt | Video Prompt
-    ...and so on. 
-    Use a 'Restoration/Interior Build' concept where the ${objectName} turns into a cozy house.`;
+// 1. Render Wake-up Endpoint
+app.get('/health', (req, res) => {
+    res.json({ status: "live", message: "Server is awake and ready! 🚀" });
+});
 
-    const completion = await nvidiaLLM.chat.completions.create({
-        model: "deepseek-ai/deepseek-v3", // Ya Gemini jo aap select karein
-        messages: [{ role: "user", content: systemPrompt }],
-        temperature: 0.7,
-    });
+// 2. Main Logic: Generate Workflow & Images
+app.post('/create-project', async (req, res) => {
+    const { objectName, ratio, clipCount = 4 } = req.body;
+    const projectId = "proj_" + Date.now();
 
-    return completion.choices[0].message.content;
-}
+    projects[projectId] = { name: objectName, status: "Thinking...", clips: [], finalShowcase: null };
+    res.json({ success: true, projectId });
 
-// --- Helper: SD3 se Image mangwana ---
-async function generateSD3Image(prompt) {
+    try {
+        // STEP 1: DeepSeek/Gemini se Prompts banwana
+        const systemPrompt = `You are a cinematic director. Create a ${clipCount}-clip restoration workflow for [${objectName}]. 
+        STRICT RULES:
+        - Clip-1: Start Image, Video Prompt, End Image.
+        - Clip-2 to ${clipCount}: Refers to previous End Image, Video Prompt, New End Image.
+        - Include a 'FINAL SHOWCASE MOTION' at the end.
+        - Format everything in a clean JSON-like structure.`;
+
+        const completion = await nvidiaClient.chat.completions.create({
+            model: "deepseek-ai/deepseek-v3", // or google/gemini-2.0-flash
+            messages: [{ role: "user", content: systemPrompt }],
+            response_format: { type: "json_object" } // Optional if model supports
+        });
+
+        const aiOutput = JSON.parse(completion.choices[0].message.content);
+        projects[projectId].status = "Generating Images...";
+
+        // STEP 2: Loop through clips and generate images using SD3
+        for (let i = 0; i < aiOutput.clips.length; i++) {
+            const clip = aiOutput.clips[i];
+            
+            // Sirf End Image generate karni hai (continuity ke liye), Clip 1 mein Start bhi.
+            let startImgData = (i === 0) ? await generateImage(clip.startPrompt, ratio) : projects[projectId].clips[i-1].endImage;
+            let endImgData = await generateImage(clip.endPrompt, ratio);
+
+            projects[projectId].clips.push({
+                title: clip.title,
+                startImage: startImgData,
+                videoPrompt: clip.videoPrompt,
+                endImage: endImgData
+            });
+        }
+
+        projects[projectId].finalShowcase = aiOutput.finalShowcase;
+        projects[projectId].status = "Completed";
+
+    } catch (err) {
+        console.error(err);
+        projects[projectId].status = "Failed";
+    }
+});
+
+// Helper: NVIDIA SD3 Image Generation
+async function generateImage(prompt, ratio) {
+    const aspect_ratio = ratio === "9:16" ? "9:16" : "16:9";
     try {
         const response = await axios.post(
             'https://integrate.api.nvidia.com/v1/models/stabilityai/stable-diffusion-3-medium',
-            {
-                payload: { prompt: prompt, mode: "text-to-image", aspect_ratio: "16:9" }
-            },
-            {
-                headers: { 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}` }
-            }
+            { payload: { prompt, mode: "text-to-image", aspect_ratio } },
+            { headers: { 'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}` } }
         );
         return response.data; 
-    } catch (err) {
-        console.error("SD3 Error");
-        return null;
-    }
+    } catch (e) { return null; }
 }
 
-// --- Main API: Create Project ---
-app.post('/create-project', async (req, res) => {
-    const { objectName } = req.body;
-    const projectId = "proj_" + Date.now();
+app.get('/project/:id', (req, res) => res.json(projects[req.params.id] || { error: "Not found" }));
 
-    projects[projectId] = { name: objectName, status: "Thinking...", data: [] };
-    res.json({ success: true, projectId });
-
-    // 1. Brain starts thinking
-    const workflowText = await generateWorkflowText(objectName);
-    projects[projectId].status = "Generating Images...";
-
-    // 2. Split logic (Yahan aap regex ya split use karke prompts nikalenge)
-    // Maan lijiye humne 4 steps nikaal liye:
-    const mockSteps = [
-        { title: "Clip 1: Discovery", imgPrompt: `Cinematic shot of a ${objectName} on soil...`, vidPrompt: "Camera pushes in..." },
-        // ... baki 3 steps
-    ];
-
-    for (const step of mockSteps) {
-        const imgUrl = await generateSD3Image(step.imgPrompt);
-        projects[projectId].data.push({
-            title: step.title,
-            image: imgUrl,
-            videoPrompt: step.vidPrompt
-        });
-    }
-
-    projects[projectId].status = "Completed";
-});
-
-app.get('/project/:id', (req, res) => {
-    res.json(projects[req.params.id] || { error: "Not found" });
-});
-
-app.listen(5000, () => console.log("AI Visualizer Backend Running!"));
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`Server live on ${PORT}`));
