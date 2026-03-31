@@ -14,7 +14,13 @@ const nvidiaClient = new OpenAI({
 });
 
 let projects = {};
-
+// Self-ping to prevent Render free tier spin-down
+const SELF_URL = 'https://ai-image-workflow-1.onrender.com';
+setInterval(() => {
+    axios.get(`${SELF_URL}/health`)
+        .then(() => console.log('Self-ping OK ✅'))
+        .catch((e) => console.log('Self-ping failed:', e.message));
+}, 10 * 60 * 1000);
 // Isko server.js mein update karo
 app.get('/health', (req, res) => res.json({ 
     status: "live", 
