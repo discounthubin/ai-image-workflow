@@ -79,31 +79,38 @@ async function generateImage(prompt, ratio) {
     
     try {
         const response = await axios.post(
-            'https://integrate.api.nvidia.com/v1/models/stabilityai/stable-diffusion-3-medium',
+            // ✅ CORRECT ENDPOINT
+            'https://ai.api.nvidia.com/v1/genai/stabilityai/stable-diffusion-3-medium',
             {
+                // ✅ CORRECT REQUEST BODY
                 prompt: prompt,
                 aspect_ratio: aspect_ratio,
-                mode: "text-to-image"
+                cfg_scale: 5,
+                steps: 50,
+                seed: 0
             },
             { 
                 headers: { 
                     'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
-                    'Accept': 'application/json' 
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
                 }
             }
         );
 
-        // NVIDIA SD3 returns base64 in 'image' field
-        if (response.data && response.data.image) {
-            return `data:image/png;base64,${response.data.image}`;
+        // ✅ CORRECT RESPONSE PARSING — artifacts[0].base64_image
+        if (response.data && response.data.artifacts && response.data.artifacts[0]) {
+            return `data:image/png;base64,${response.data.artifacts[0].base64_image}`;
         }
+
+        console.error("NVIDIA: Unexpected response structure:", JSON.stringify(response.data));
         return null;
+
     } catch (e) {
-        console.error("NVIDIA Error:", e.response?.data || e.message);
+        console.error("NVIDIA Image Error:", e.response?.data || e.message);
         return null; 
     }
 }
-
 app.get('/project/:id', (req, res) => res.json(projects[req.params.id] || { error: "Not found" }));
 
 const PORT = process.env.PORT || 10000;
