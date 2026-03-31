@@ -15,7 +15,12 @@ const nvidiaClient = new OpenAI({
 
 let projects = {};
 
-app.get('/health', (req, res) => res.json({ status: "live" }));
+// Isko server.js mein update karo
+app.get('/health', (req, res) => res.json({ 
+    status: "live", 
+    version: "2.0", 
+    routes: ["health", "create-project", "project-status"] 
+}));
 
 app.post('/create-project', async (req, res) => {
     const { objectName, ratio } = req.body;
