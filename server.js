@@ -8,62 +8,50 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ─── Gemini Client ────────────────────────────────────────
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const geminiModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
 let projects = {};
 
-// ─── Health Check ─────────────────────────────────────────
-app.get('/health', (req, res) => res.json({ 
-    status: "live", 
-    version: "3.0", 
-    routes: ["health", "create-project", "project-status"] 
+app.get('/health', (req, res) => res.json({
+    status: "live", version: "3.0",
+    routes: ["health", "create-project", "project/:id"]
 }));
 
-// ─── Create Project ───────────────────────────────────────
 app.post('/create-project', async (req, res) => {
     const { objectName, ratio } = req.body;
     const projectId = "proj_" + Date.now();
 
-    projects[projectId] = { 
-        name: objectName, 
-        status: "Thinking...", 
-        clips: [], 
-        finalShowcase: null,
-        error: null 
+    projects[projectId] = {
+        name: objectName, status: "Thinking...",
+        clips: [], finalShowcase: null, error: null
     };
 
     res.json({ success: true, projectId });
 
     try {
-        // ─── Gemini 2.5 Flash for Script Generation ───────
-        const prompt = `You are a cinematic director. Create a 4-clip restoration workflow for [${objectName}]. 
+        const prompt = `You are a cinematic director. Create a 4-clip restoration workflow for [${objectName}].
         Return ONLY a valid JSON object with no extra text, no markdown, no backticks:
         { "clips": [ { "title": "...", "startPrompt": "...", "videoPrompt": "...", "endPrompt": "..." } ], "finalShowcase": "..." }`;
 
         const result = await geminiModel.generateContent(prompt);
         const rawText = result.response.text().trim();
-
-        // Clean JSON if Gemini adds backticks
-        const cleanJson = rawText.replace(/```json|```/g, '').trim();
+        const cleanJson = rawText.replace(/\`\`\`json|\`\`\`/g, '').trim();
         const aiOutput = JSON.parse(cleanJson);
 
         projects[projectId].status = "Generating Images...";
 
-        // ─── Image Generation Loop ─────────────────────────
+        // FIX: Do NOT pass endImage of clip N as startImage of clip N+1 (heavy base64 duplication).
+        // Clip 1 gets a startImage. All clips get their own endImage.
+        // Frontend handles visual continuity note ("← End of Clip N-1") for clips 2-4.
         for (let i = 0; i < aiOutput.clips.length; i++) {
             const clip = aiOutput.clips[i];
-            
-            let startImg = (i === 0) 
-                ? await generateImage(clip.startPrompt, ratio) 
-                : projects[projectId].clips[i-1].endImage;
-
-            let endImg = await generateImage(clip.endPrompt, ratio);
+            const startImg = (i === 0) ? await generateImage(clip.startPrompt, ratio) : null;
+            const endImg   = await generateImage(clip.endPrompt, ratio);
 
             projects[projectId].clips.push({
                 title: clip.title,
-                startImage: startImg, 
+                startImage: startImg,
                 videoPrompt: clip.videoPrompt,
                 endImage: endImg
             });
@@ -79,7 +67,6 @@ app.post('/create-project', async (req, res) => {
     }
 });
 
-// ─── NVIDIA SD3 Image Generation ──────────────────────────
 async function generateImage(prompt, ratio) {
     if (!prompt) return null;
 
@@ -87,12 +74,8 @@ async function generateImage(prompt, ratio) {
     const aspect_ratio = ratio === "9:16" ? "9:16" : "16:9";
 
     const payload = {
-        prompt: prompt,
-        cfg_scale: 5,
-        aspect_ratio: aspect_ratio,
-        seed: 0,
-        steps: 50,
-        negative_prompt: ""
+        prompt, cfg_scale: 5, aspect_ratio,
+        seed: 0, steps: 50, negative_prompt: ""
     };
 
     const headers = {
@@ -104,14 +87,11 @@ async function generateImage(prompt, ratio) {
     try {
         const response = await axios.post(invokeUrl, payload, { headers });
 
-        if (response.status !== 200) {
+        if (response.status !== 200)
             throw new Error(`NVIDIA returned status ${response.status}`);
-        }
 
-        // NVIDIA SD3 returns: { "artifacts": [ { "base64_image": "..." } ] }
-        if (response.data && response.data.artifacts && response.data.artifacts[0]) {
+        if (response.data?.artifacts?.[0]?.base64_image)
             return `data:image/png;base64,${response.data.artifacts[0].base64_image}`;
-        }
 
         console.error("NVIDIA: Unexpected response:", JSON.stringify(response.data));
         return null;
@@ -122,11 +102,9 @@ async function generateImage(prompt, ratio) {
     }
 }
 
-// ─── Get Project Status ───────────────────────────────────
 app.get('/project/:id', (req, res) => {
     res.json(projects[req.params.id] || { error: "Not found" });
 });
 
-// ─── Start Server ─────────────────────────────────────────
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => console.log(`Backend Active on port ${PORT}`));
