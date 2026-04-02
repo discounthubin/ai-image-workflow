@@ -74,8 +74,12 @@ async function generateImage(prompt, ratio) {
     const aspect_ratio = ratio === "9:16" ? "9:16" : "16:9";
 
     const payload = {
-        prompt, cfg_scale: 5, aspect_ratio,
-        seed: 0, steps: 50, negative_prompt: ""
+        prompt: prompt,
+        cfg_scale: 5,
+        aspect_ratio: aspect_ratio,
+        seed: 0,
+        steps: 50,
+        negative_prompt: ""
     };
 
     const headers = {
@@ -85,15 +89,23 @@ async function generateImage(prompt, ratio) {
     };
 
     try {
-        const response = await axios.post(invokeUrl, payload, { headers });
+        // 40 seconds ka timeout add kiya hai taaki request hang na ho
+        const response = await axios.post(invokeUrl, payload, { headers, timeout: 40000 });
 
-        if (response.status !== 200)
+        if (response.status !== 200) {
             throw new Error(`NVIDIA returned status ${response.status}`);
+        }
 
-        if (response.data?.artifacts?.[0]?.base64_image)
-            return `data:image/png;base64,${response.data.artifacts[0].base64_image}`;
+        // Robust parsing: Ye dono formats (direct image string ya artifacts array) ko handle karega
+        const responseData = response.data;
+        const base64str = responseData.image || 
+                          (responseData.artifacts && responseData.artifacts[0] && (responseData.artifacts[0].base64 || responseData.artifacts[0].base64_image));
 
-        console.error("NVIDIA: Unexpected response:", JSON.stringify(response.data));
+        if (base64str) {
+            return `data:image/jpeg;base64,${base64str}`;
+        }
+
+        console.error("NVIDIA: Unexpected response format", JSON.stringify(responseData).substring(0, 200));
         return null;
 
     } catch (e) {
